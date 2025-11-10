@@ -7,11 +7,11 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
 
-// Serve the React build folder
+// Serve React build folder
 app.use(express.static(path.join(__dirname, "client/build")));
 
-// Catch-all handler to return React's index.html for any other route
-app.get("*", (req, res) => {
+// Catch-all route for React
+app.get(/.*/, (req, res) => {
   res.sendFile(path.join(__dirname, "client/build", "index.html"));
 });
 
