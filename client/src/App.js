@@ -1,56 +1,36 @@
 import React, { useEffect, useRef, useState } from "react";
 import io from "socket.io-client";
 
-// Replace with your deployed Render server URL
 const SOCKET_SERVER_URL = "https://callapp-apl7.onrender.com";
+const ROOM_ID = "room1"; // fixed room for 2 participants
 
 export default function App() {
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
-  const [socket, setSocket] = useState(null);
-  const [peerConnection, setPeerConnection] = useState(null);
   const localStreamRef = useRef(null);
-
-  const ROOM_ID = "room1"; // fixed room for 2 participants
+  const pcRef = useRef(null);
+  const socketRef = useRef(null);
 
   useEffect(() => {
-    const s = io(SOCKET_SERVER_URL);
-    setSocket(s);
+    // 1. Connect to Socket.io
+    const socket = io(SOCKET_SERVER_URL);
+    socketRef.current = socket;
 
-    // Get local camera/mic
+    // 2. Get local camera/mic
     navigator.mediaDevices.getUserMedia({ video: true, audio: true })
       .then(stream => {
         localVideoRef.current.srcObject = stream;
         localStreamRef.current = stream;
+
+        // 3. Join room after stream is ready
+        socket.emit("join", ROOM_ID);
       });
 
-    return () => s.disconnect();
-  }, []);
-
-  useEffect(() => {
-    if (!socket || !localStreamRef.current) return;
-
-    const pc = new RTCPeerConnection();
-
-    // Add local tracks
-    localStreamRef.current.getTracks().forEach(track => pc.addTrack(track, localStreamRef.current));
-
-    // Set remote stream
-    pc.ontrack = (event) => {
-      remoteVideoRef.current.srcObject = event.streams[0];
-    };
-
-    // Send ICE candidates to other peer
-    pc.onicecandidate = (event) => {
-      if (event.candidate) {
-        socket.emit("signal", { roomId: ROOM_ID, data: { candidate: event.candidate } });
-      }
-    };
-
-    setPeerConnection(pc);
-
-    // Listen for signaling data
+    // 4. Handle signaling data
     socket.on("signal", async ({ data }) => {
+      const pc = pcRef.current;
+      if (!pc) return;
+
       if (data.sdp) {
         await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
         if (data.sdp.type === "offer") {
@@ -67,13 +47,36 @@ export default function App() {
       }
     });
 
-    // Join the room
-    socket.emit("join", ROOM_ID);
+    // 5. Listen for the "peer-joined" event
+    socket.on("peer-joined", async () => {
+      if (pcRef.current) return; // already have a peer connection
 
-    return () => {
-      pc.close();
-    };
-  }, [socket]);
+      const pc = new RTCPeerConnection();
+      pcRef.current = pc;
+
+      // Add local tracks
+      localStreamRef.current.getTracks().forEach(track => pc.addTrack(track, localStreamRef.current));
+
+      // Remote track
+      pc.ontrack = (event) => {
+        remoteVideoRef.current.srcObject = event.streams[0];
+      };
+
+      // ICE candidates
+      pc.onicecandidate = (event) => {
+        if (event.candidate) {
+          socket.emit("signal", { roomId: ROOM_ID, data: { candidate: event.candidate } });
+        }
+      };
+
+      // Create an offer (only first participant does this)
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      socket.emit("signal", { roomId: ROOM_ID, data: { sdp: offer } });
+    });
+
+    return () => socket.disconnect();
+  }, []);
 
   return (
     <div style={{ display: "flex", justifyContent: "space-around", marginTop: "20px" }}>
